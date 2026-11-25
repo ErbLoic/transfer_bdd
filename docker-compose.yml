@@ -3,10 +3,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
+    # RELAYDB_SECRET_KEY (chiffrement de l'historique) est lue dans .env, jamais commitée.
+    env_file:
+      - path: .env
+        required: false
     environment:
       PORT: 3001
+      RELAYDB_STORE_FILE: /data/relaydb-store.enc
     expose:
       - "3001"
+    volumes:
+      # Fichiers SQLite accessibles par sqlite:///data/nom_du_fichier.db
+      - ./data:/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(response => { if (!response.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 10s

@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    name: Lint, build et tests unitaires
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
+  engines:
+    name: Chaîne entre moteurs réels
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # Mot de passe aléatoire généré à chaque exécution : aucun secret dans le dépôt.
+      - name: Démarrer PostgreSQL, MySQL, SQL Server et Oracle
+        run: |
+          PW="T$(openssl rand -hex 12)a1!"
+          echo "::add-mask::$PW"
+          docker run -d --name pg -e POSTGRES_PASSWORD="$PW" -e POSTGRES_DB=rt -p 5432:5432 postgres:17-alpine
+          docker run -d --name my -e MYSQL_ROOT_PASSWORD="$PW" -e MYSQL_DATABASE=rt -p 3306:3306 mysql:8.4
+          docker run -d --name ms -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="$PW" -p 1433:1433 mcr.microsoft.com/mssql/server:2022-latest
+          docker run -d --name ora -e ORACLE_PASSWORD="$PW" -e APP_USER=rt -e APP_USER_PASSWORD="$PW" -p 1521:1521 gvenzl/oracle-free:23-slim
+          ENC=$(node -e "process.stdout.write(encodeURIComponent(process.argv[1]))" "$PW")
+          {
+            echo "RELAYDB_TEST_POSTGRES=postgresql://postgres:$ENC@localhost:5432/rt"
+            echo "RELAYDB_TEST_MYSQL=mysql://root:$ENC@localhost:3306/rt"
+            echo "RELAYDB_TEST_MSSQL=sqlserver://sa:$ENC@localhost:1433/rt?trustServerCertificate=true"
+            echo "RELAYDB_TEST_ORACLE=oracle://rt:$ENC@localhost:1521/FREEPDB1"
+          } >> "$GITHUB_ENV"
+          echo "DB_PW=$PW" >> "$GITHUB_ENV"
+      - name: Attendre que les bases soient prêtes
+        run: |
+          for i in $(seq 1 90); do docker exec pg pg_isready -U postgres >/dev/null 2>&1 && break; sleep 2; done
+          for i in $(seq 1 90); do docker exec my mysqladmin ping -uroot -p"$DB_PW" --silent >/dev/null 2>&1 && break; sleep 2; done
+          for i in $(seq 1 90); do docker exec ms /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$DB_PW" -Q "IF DB_ID('rt') IS NULL CREATE DATABASE rt" >/dev/null 2>&1 && break; sleep 3; done
+          for i in $(seq 1 120); do docker logs ora 2>&1 | grep -q "DATABASE IS READY TO USE" && break; sleep 5; done
+      - run: npm run test:engines
